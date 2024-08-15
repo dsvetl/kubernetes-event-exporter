@@ -1,6 +1,7 @@
 package sinks
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"io"
@@ -27,8 +28,7 @@ type Stdout struct {
 }
 
 func NewStdoutSink(config *StdoutConfig) (*Stdout, error) {
-	logger := log.New(os.Stdout, "", 0)
-	writer := logger.Writer()
+	writer := bufio.NewWriter(os.Stdout)
 
 	return &Stdout{
 		writer:  writer,
@@ -38,6 +38,9 @@ func NewStdoutSink(config *StdoutConfig) (*Stdout, error) {
 }
 
 func (f *Stdout) Close() {
+	if bufWriter, ok := f.writer.(*bufio.Writer); ok {
+		bufWriter.Flush()
+	}
 }
 
 func (f *Stdout) Send(ctx context.Context, ev *kube.EnhancedEvent) error {
@@ -46,14 +49,28 @@ func (f *Stdout) Send(ctx context.Context, ev *kube.EnhancedEvent) error {
 		ev = &de
 	}
 
+	var err error
 	if f.cfg.Layout == nil {
-		return f.encoder.Encode(ev)
+		err = f.encoder.Encode(ev)
+	} else {
+		res, convErr := convertLayoutTemplate(f.cfg.Layout, ev)
+		if convErr != nil {
+			return convErr
+		}
+		err = f.encoder.Encode(res)
 	}
 
-	res, err := convertLayoutTemplate(f.cfg.Layout, ev)
 	if err != nil {
+		log.Printf("Error encoding or sending event: %v", err)
 		return err
 	}
 
-	return f.encoder.Encode(res)
+	if bufWriter, ok := f.writer.(*bufio.Writer); ok {
+		if flushErr := bufWriter.Flush(); flushErr != nil {
+			log.Printf("Error flushing buffer: %v", flushErr)
+			return flushErr
+		}
+	}
+
+	return nil
 }
